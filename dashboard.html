@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Runtime Dashboard</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://unpkg.com/echarts@5/dist/echarts.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+.header{background:#1e293b;padding:16px 24px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #334155}
+.header h1{font-size:20px;font-weight:600;color:#f1f5f9}
+.header .status{display:flex;align-items:center;gap:8px}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.dot.running{background:#22c55e;box-shadow:0 0 8px rgba(34,197,94,.5);animation:pulse 1.5s infinite}
+.dot.idle{background:#64748b}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.main{display:grid;grid-template-columns:1fr 340px;gap:16px;padding:20px 24px;max-width:1600px;margin:0 auto}
+.left{display:flex;flex-direction:column;gap:16px}
+.right{display:flex;flex-direction:column;gap:16px}
+.card{background:#1e293b;border-radius:10px;padding:18px;border:1px solid #334155}
+.card h3{font-size:13px;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px}
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.kpi{background:#0f172a;border-radius:8px;padding:16px;text-align:center;border:1px solid #1e293b}
+.kpi .val{font-size:28px;font-weight:700;color:#f1f5f9}
+.kpi .lbl{font-size:11px;color:#64748b;margin-top:4px}
+.kpi .cost{color:#22c55e}
+.kpi .warn{color:#f59e0b}
+.progress-bar{background:#334155;border-radius:6px;height:8px;overflow:hidden;margin:8px 0}
+.progress-fill{background:linear-gradient(90deg,#3b82f6,#8b5cf6);height:100%;transition:width .3s}
+#timeline{height:240px}
+#eventList{max-height:300px;overflow-y:auto;font-size:12px}
+.evt{padding:6px 0;border-bottom:1px solid #1e293b;display:flex;gap:8px;align-items:flex-start}
+.evt .t{color:#64748b;flex-shrink:0}
+.evt .m{color:#e2e8f0}
+.evt .s{color:#22c55e}
+.evt .f{color:#ef4444}
+textarea, input{background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:10px;border-radius:6px;width:100%;font-size:12px;resize:vertical}
+button{background:#3b82f6;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500}
+button:hover{background:#2563eb}
+button:disabled{opacity:.5;cursor:not-allowed}
+button.danger{background:#ef4444}
+button.danger:hover{background:#dc2626}
+.milestone-row{display:flex;align-items:center;padding:8px 12px;background:#0f172a;border-radius:6px;margin-bottom:6px;gap:8px}
+.milestone-row .idx{color:#64748b;font-size:11px;width:20px}
+.milestone-row input{flex:1;padding:6px;font-size:11px}
+.milestone-row select{background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:6px;border-radius:4px;font-size:11px}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <h1>Agent Runtime Dashboard</h1>
+    <div class="status">
+      <span class="dot" :class="running ? 'running' : 'idle'"></span>
+      <span>{{ running ? 'Running' : 'Idle' }}</span>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="left">
+      <!-- KPI cards -->
+      <div class="card">
+        <h3>Metrics</h3>
+        <div class="kpi-grid">
+          <div class="kpi"><div class="val">{{ status.progress * 100 | pct }}</div><div class="lbl">Progress</div></div>
+          <div class="kpi"><div class="val">{{ status.completed }}/{{ status.total }}</div><div class="lbl">Milestones</div></div>
+          <div class="kpi"><div class="val cost">${{ status.total_cost.toFixed(4) }}</div><div class="lbl">Total Cost</div></div>
+          <div class="kpi"><div class="val">{{ status.total_tokens | num }}</div><div class="lbl">Total Tokens</div></div>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" :style="{width: (status.progress*100)+'%'}"></div>
+        </div>
+      </div>
+
+      <!-- Timeline chart -->
+      <div class="card">
+        <h3>Score Timeline</h3>
+        <div id="timeline"></div>
+      </div>
+
+      <!-- Results table -->
+      <div class="card">
+        <h3>Milestone Results</h3>
+        <div v-if="results.length" style="font-size:12px">
+          <div v-for="(r,i) in results" :key="i" style="padding:8px 0;border-bottom:1px solid #1e293b;display:flex;gap:12px;align-items:center">
+            <span :style="{color: r.passed ? '#22c55e' : '#ef4444'}">{{ r.passed ? '✓' : '✗' }}</span>
+            <span style="flex:1">{{ r.name }}</span>
+            <span style="color:#64748b;font-size:11px" :title="r.tier">{{ r.tier === 'powerful' ? '⚡' : '' }}</span>
+            <span :style="{color: r.score >= 75 ? '#22c55e' : '#ef4444'}">{{ r.score }}/100</span>
+            <span style="color:#64748b">{{ r.retries }} retries</span>
+            <span style="color:#94a3b8">${{ r.cost.toFixed(4) }}</span>
+            <span style="color:#64748b">{{ r.duration.toFixed(0) }}s</span>
+          </div>
+        </div>
+        <div v-else style="color:#64748b;text-align:center;padding:20px">No results yet</div>
+      </div>
+    </div>
+
+    <div class="right">
+      <!-- Task config -->
+      <div class="card">
+        <h3>Task Configuration</h3>
+        <textarea v-model="taskDesc" rows="3" placeholder="Task description..." :disabled="running"></textarea>
+        <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
+          <label style="font-size:12px;color:#94a3b8">
+            <input type="checkbox" v-model="dagMode" :disabled="running"> DAG parallel
+          </label>
+          <span style="flex:1"></span>
+          <button @click="startRun" :disabled="running || !taskDesc">Run</button>
+          <button class="danger" @click="stopRun" :disabled="!running">Stop</button>
+        </div>
+      </div>
+
+      <!-- Event log -->
+      <div class="card">
+        <h3>Event Log</h3>
+        <div id="eventList">
+          <div v-for="(e,i) in events" :key="i" class="evt">
+            <span class="t">{{ e.ts.slice(11,19) }}</span>
+            <span class="m">{{ e.text }}</span>
+          </div>
+          <div v-if="!events.length" style="color:#64748b;text-align:center;padding:20px">Waiting for events...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const { createApp, ref, reactive, onMounted, onUnmounted, watch, nextTick, computed } = Vue
+
+createApp({
+  setup() {
+    const running = ref(false)
+    const taskDesc = ref("Design an AI visual inspection system for a coin cell battery factory")
+    const dagMode = ref(false)
+    const status = reactive({progress:0,completed:0,total:0,total_cost:0,total_tokens:0})
+    const results = ref([])
+    const events = ref([])
+    let ws = null
+    let chart = null
+
+    function connectWs() {
+      ws = new WebSocket(`ws://${location.host}/ws`)
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data)
+        const d = msg.data || {}
+        let text = msg.type
+
+        if (msg.type === 'worker_start') text = `Worker started: ${d.milestone} (attempt ${d.attempt})`
+        else if (msg.type === 'worker_done') text = `Worker done: ${d.milestone} — ${d.tokens || 0} tok`
+        else if (msg.type === 'critic_done') text = `Critic: ${d.passed ? 'PASS' : 'FAIL'}` + (d.issues?.length ? ` (${d.issues.length} issues)` : '')
+        else if (msg.type === 'milestone_passed') { text = `PASS: ${d.name} (${d.score}/100)`; fetchResults(); fetchStatus() }
+        else if (msg.type === 'milestone_failed') { text = `FAIL: ${d.name}`; fetchResults(); fetchStatus() }
+        else if (msg.type === 'task_queued') text = `Queued: ${d.milestone} (${d.parallel} parallel)`
+        else if (msg.type === 'run_complete') { running.value = false; fetchResults(); fetchStatus() }
+        else if (msg.type === 'error') text = `ERROR: ${d.message}`
+
+        events.value.unshift({ts: msg.ts, text: text, type: msg.type})
+        if (events.value.length > 100) events.value.length = 100
+      }
+      ws.onclose = () => { setTimeout(connectWs, 3000) }
+    }
+
+    async function fetchStatus() {
+      try {
+        const r = await fetch('/api/status')
+        const d = await r.json()
+        Object.assign(status, d)
+        running.value = d.running
+      } catch(e) {}
+    }
+
+    async function fetchResults() {
+      try {
+        const r = await fetch('/api/results')
+        results.value = await r.json()
+        nextTick(() => renderChart())
+      } catch(e) {}
+    }
+
+    async function startRun() {
+      const ms = [
+        {name:"Requirements",description:"Analyze visual inspection needs for coin cell battery production. List ALL inspection stations (5+), defect types per station, precision requirements, and takt time. Use a table.",validation_hint:"Are ALL stations listed? Units consistent?",rules:["Table must contain at least 5 inspection stations","Precision in mm or μm, not vague","Takt time in seconds or pcs/min"],depends_on:[],use_powerful_model:false},
+        {name:"Hardware",description:"Recommend specific camera models, lenses, and light sources per station. Include model numbers, parameters, rationale, per-station cost.",validation_hint:"Are camera models real? Parameters match Requirements?",rules:["Camera models must be verifiable real products","Resolution must match precision from Requirements","Per-station cost must be estimated RMB range"],depends_on:[0],use_powerful_model:true},
+        {name:"Architecture",description:"Design inspection software architecture with ASCII diagram: image acquisition, algorithm pipeline, result judgment, data management.",validation_hint:"Clear data flow? Extensibility?",rules:["Each module must have defined I/O interfaces","Must explain how new algorithms can be added"],depends_on:[0],use_powerful_model:false},
+        {name:"Algorithms",description:"For each defect from Requirements, propose algorithm (CV or DL). Include: algorithm name, rationale, expected accuracy %, inference time ms, training data needs.",validation_hint:"Every defect covered? Numbers specific?",rules:["Each defect must have at least one algorithm","DL choices must specify architecture","Accuracy must be numeric %","Inference time in ms, consistent with takt time"],depends_on:[0],use_powerful_model:false},
+        {name:"Implementation",description:"3-phase plan integrating all above. Each phase: timeline weeks, deliverables, acceptance criteria. 5+ risks with mitigations.",validation_hint:"Timelines account for procurement? Risks specific?",rules:["Phase timeline accounts for hardware procurement","Each phase has concrete deliverables","Risks cover technical, schedule, supply-chain"],depends_on:[1,2,3],use_powerful_model:true}
+      ]
+      await fetch('/api/run', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({task: taskDesc.value, dag: dagMode.value, milestones: ms})
+      })
+      running.value = true
+      fetchStatus()
+    }
+
+    async function stopRun() {
+      await fetch('/api/stop', {method:'POST'})
+      running.value = false
+    }
+
+    function renderChart() {
+      const el = document.getElementById('timeline')
+      if (!el || !results.value.length) return
+      if (!chart) chart = echarts.init(el)
+      const names = results.value.map(r => r.name)
+      const scores = results.value.map(r => r.score)
+      const passed = results.value.map(r => r.passed)
+      chart.setOption({
+        tooltip:{trigger:'axis'},
+        grid:{left:20,right:20,top:10,bottom:20,containLabel:true},
+        xAxis:{type:'category',data:names,axisLabel:{color:'#94a3b8',fontSize:10}},
+        yAxis:{type:'value',min:0,max:100,axisLabel:{color:'#94a3b8'},splitLine:{lineStyle:{color:'#1e293b'}}},
+        series:[{
+          data:scores.map((v,i) => ({value:v,itemStyle:{color:passed[i]?'#22c55e':'#ef4444'}})),
+          type:'bar',barWidth:32,
+          itemStyle:{borderRadius:[4,4,0,0]},
+          markLine:{silent:true,data:[{yAxis:75,lineStyle:{color:'#f59e0b',type:'dashed'}}],label:{formatter:'Pass (75)',color:'#94a3b8',fontSize:10}}
+        }]
+      }, true)
+    }
+
+    onMounted(() => { connectWs(); fetchStatus(); fetchResults() })
+    onUnmounted(() => { if(ws) ws.close(); if(chart) chart.dispose() })
+    setInterval(fetchStatus, 3000)
+
+    return {running,taskDesc,dagMode,status,results,events,startRun,stopRun}
+  }
+}).config.globalProperties.$filters = {
+  pct: v => Math.round(v * 100) + '%',
+  num: v => v > 999 ? (v/1000).toFixed(1)+'k' : v
+}
+app = createApp({})
+app.mount('#app')
+</script>
+</body>
+</html>
